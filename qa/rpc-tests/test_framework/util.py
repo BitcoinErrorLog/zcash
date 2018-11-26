@@ -1,6 +1,8 @@
 # Copyright (c) 2014 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+
 #
 # Helpful routines for regression testing
 #
@@ -9,6 +11,8 @@
 import os
 import sys
 
+from binascii import hexlify, unhexlify
+from base64 import b64encode
 from decimal import Decimal, ROUND_DOWN
 import json
 import random
@@ -17,8 +21,7 @@ import subprocess
 import time
 import re
 
-from authproxy import AuthServiceProxy, JSONRPCException
-from util import *
+from authproxy import AuthServiceProxy
 
 def p2p_port(n):
     return 11000 + n + os.getpid()%999
@@ -31,6 +34,15 @@ def check_json_precision():
     satoshis = int(json.loads(json.dumps(float(n)))*1.0e8)
     if satoshis != 2000000000000003:
         raise RuntimeError("JSON encode/decode loses precision")
+
+def bytes_to_hex_str(byte_str):
+    return hexlify(byte_str).decode('ascii')
+
+def hex_str_to_bytes(hex_str):
+    return unhexlify(hex_str.encode('ascii'))
+
+def str_to_b64str(string):
+    return b64encode(string.encode('utf-8')).decode('ascii')
 
 def sync_blocks(rpc_connections, wait=1):
     """
@@ -64,12 +76,13 @@ def initialize_datadir(dirname, n):
     if not os.path.isdir(datadir):
         os.makedirs(datadir)
     with open(os.path.join(datadir, "zcash.conf"), 'w') as f:
-        f.write("regtest=1\n");
-        f.write("showmetrics=0\n");
-        f.write("rpcuser=rt\n");
-        f.write("rpcpassword=rt\n");
-        f.write("port="+str(p2p_port(n))+"\n");
-        f.write("rpcport="+str(rpc_port(n))+"\n");
+        f.write("regtest=1\n")
+        f.write("showmetrics=0\n")
+        f.write("rpcuser=rt\n")
+        f.write("rpcpassword=rt\n")
+        f.write("port="+str(p2p_port(n))+"\n")
+        f.write("rpcport="+str(rpc_port(n))+"\n")
+        f.write("listenonion=0\n")
     return datadir
 
 def initialize_chain(test_dir):
@@ -139,7 +152,7 @@ def initialize_chain_clean(test_dir, num_nodes):
     Useful if a test case wants complete control over initialization.
     """
     for i in range(num_nodes):
-        datadir=initialize_datadir(test_dir, i)
+        initialize_datadir(test_dir, i)
 
 
 def _rpchost_to_args(rpchost):
@@ -199,6 +212,10 @@ def start_nodes(num_nodes, dirname, extra_args=None, rpchost=None, binary=None):
 
 def log_filename(dirname, n_node, logname):
     return os.path.join(dirname, "node"+str(n_node), "regtest", logname)
+
+def check_node(i):
+    bitcoind_processes[i].poll()
+    return bitcoind_processes[i].returncode
 
 def stop_node(node, i):
     node.stop()
@@ -338,9 +355,18 @@ def random_transaction(nodes, amount, min_fee, fee_increment, fee_variants):
 
     return (txid, signresult["hex"], fee)
 
-def assert_equal(thing1, thing2):
-    if thing1 != thing2:
-        raise AssertionError("%s != %s"%(str(thing1),str(thing2)))
+def assert_equal(expected, actual, message=""):
+    if expected != actual:
+        if message:
+            message = "; %s" % message 
+        raise AssertionError("(left == right)%s\n  left: <%s>\n right: <%s>" % (message, str(expected), str(actual)))
+
+def assert_true(condition, message = ""):
+    if not condition:
+        raise AssertionError(message)
+        
+def assert_false(condition, message = ""):
+    assert_true(not condition, message)
 
 def assert_greater_than(thing1, thing2):
     if thing1 <= thing2:
@@ -355,3 +381,41 @@ def assert_raises(exc, fun, *args, **kwds):
         raise AssertionError("Unexpected exception raised: "+type(e).__name__)
     else:
         raise AssertionError("No exception raised")
+
+def fail(message=""):
+    raise AssertionError(message)
+
+# Returns txid if operation was a success or None
+def wait_and_assert_operationid_status(node, myopid, in_status='success', in_errormsg=None, timeout=300):
+    print('waiting for async operation {}'.format(myopid))
+    result = None
+    for _ in xrange(1, timeout):
+        results = node.z_getoperationresult([myopid])
+        if len(results) > 0:
+            result = results[0]
+            break
+        time.sleep(1)
+
+    assert_true(result is not None, "timeout occured")
+    status = result['status']
+
+    txid = None
+    errormsg = None
+    if status == "failed":
+        errormsg = result['error']['message']
+    elif status == "success":
+        txid = result['result']['txid']
+
+    if os.getenv("PYTHON_DEBUG", ""):
+        print('...returned status: {}'.format(status))
+        if errormsg is not None:
+            print('...returned error: {}'.format(errormsg))
+    
+    assert_equal(in_status, status, "Operation returned mismatched status. Error Message: {}".format(errormsg))
+
+    if errormsg is not None:
+        assert_true(in_errormsg is not None, "No error retured. Expected: {}".format(errormsg))
+        assert_true(in_errormsg in errormsg, "Error returned: {}. Error expected: {}".format(errormsg, in_errormsg))
+        return result # if there was an error return the result
+    else:
+        return txid # otherwise return the txid

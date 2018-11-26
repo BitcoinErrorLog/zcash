@@ -13,8 +13,8 @@
 #include "data/alertTests.raw.h"
 
 #include "main.h"
-#include "rpcprotocol.h"
-#include "rpcserver.h"
+#include "rpc/protocol.h"
+#include "rpc/server.h"
 #include "serialize.h"
 #include "streams.h"
 #include "util.h"
@@ -27,7 +27,6 @@
 #include <boost/filesystem/operations.hpp>
 #include <boost/foreach.hpp>
 #include <boost/test/unit_test.hpp>
-#include "json/json_spirit_reader_template.h"
 
 #include "key.h"
 #include "alertkeys.h"

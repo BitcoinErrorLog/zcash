@@ -7,20 +7,23 @@
 
 #include "asyncrpcoperation.h"
 #include "amount.h"
-#include "base58.h"
 #include "primitives/transaction.h"
+#include "transaction_builder.h"
 #include "zcash/JoinSplit.hpp"
 #include "zcash/Address.hpp"
-#include "json/json_spirit_value.h"
 #include "wallet.h"
+#include "paymentdisclosure.h"
 
+#include <array>
+#include <unordered_map>
 #include <tuple>
 
-// TODO: Compute fee based on a heuristic, e.g. (num tx output * dust threshold) + joinsplit bytes * ?
+#include <univalue.h>
+
+// Default transaction fee if caller does not specify one.
 #define ASYNC_RPC_OPERATION_DEFAULT_MINERS_FEE   10000
 
 using namespace libzcash;
-using namespace json_spirit;
 
 // A recipient is a tuple of address, amount, memo (optional if zaddr)
 typedef std::tuple<std::string, CAmount, std::string> SendManyRecipient;
@@ -29,21 +32,35 @@ typedef std::tuple<std::string, CAmount, std::string> SendManyRecipient;
 typedef std::tuple<uint256, int, CAmount, bool> SendManyInputUTXO;
 
 // Input JSOP is a tuple of JSOutpoint, note and amount
-typedef std::tuple<JSOutPoint, Note, CAmount> SendManyInputJSOP;
+typedef std::tuple<JSOutPoint, SproutNote, CAmount> SendManyInputJSOP;
 
 // Package of info which is passed to perform_joinsplit methods.
 struct AsyncJoinSplitInfo
 {
     std::vector<JSInput> vjsin;
     std::vector<JSOutput> vjsout;
-    std::vector<Note> notes;
+    std::vector<SproutNote> notes;
     CAmount vpub_old = 0;
     CAmount vpub_new = 0;
 };
 
+// A struct to help us track the witness and anchor for a given JSOutPoint
+struct WitnessAnchorData {
+	boost::optional<SproutWitness> witness;
+	uint256 anchor;
+};
+
 class AsyncRPCOperation_sendmany : public AsyncRPCOperation {
 public:
-    AsyncRPCOperation_sendmany(std::string fromAddress, std::vector<SendManyRecipient> tOutputs, std::vector<SendManyRecipient> zOutputs, int minDepth);
+    AsyncRPCOperation_sendmany(
+        boost::optional<TransactionBuilder> builder,
+        CMutableTransaction contextualTx,
+        std::string fromAddress,
+        std::vector<SendManyRecipient> tOutputs,
+        std::vector<SendManyRecipient> zOutputs,
+        int minDepth,
+        CAmount fee = ASYNC_RPC_OPERATION_DEFAULT_MINERS_FEE,
+        UniValue contextInfo = NullUniValue);
     virtual ~AsyncRPCOperation_sendmany();
     
     // We don't want to be copied or moved around
@@ -54,51 +71,66 @@ public:
     
     virtual void main();
 
+    virtual UniValue getStatus() const;
+
     bool testmode = false;  // Set to true to disable sending txs and generating proofs
+
+    bool paymentDisclosureMode = false; // Set to true to save esk for encrypted notes in payment disclosure database.
 
 private:
     friend class TEST_FRIEND_AsyncRPCOperation_sendmany;    // class for unit testing
 
+    UniValue contextinfo_;     // optional data to include in return value from getStatus()
+
+    bool isUsingBuilder_; // Indicates that no Sprout addresses are involved
+    uint32_t consensusBranchId_;
+    CAmount fee_;
     int mindepth_;
     std::string fromaddress_;
     bool isfromtaddr_;
     bool isfromzaddr_;
-    CBitcoinAddress fromtaddr_;
+    CTxDestination fromtaddr_;
     PaymentAddress frompaymentaddress_;
     SpendingKey spendingkey_;
     
     uint256 joinSplitPubKey_;
     unsigned char joinSplitPrivKey_[crypto_sign_SECRETKEYBYTES];
 
-        
+    // The key is the result string from calling JSOutPoint::ToString()
+    std::unordered_map<std::string, WitnessAnchorData> jsopWitnessAnchorMap;
+
     std::vector<SendManyRecipient> t_outputs_;
     std::vector<SendManyRecipient> z_outputs_;
     std::vector<SendManyInputUTXO> t_inputs_;
-    std::vector<SendManyInputJSOP> z_inputs_;
-    
+    std::vector<SendManyInputJSOP> z_sprout_inputs_;
+    std::vector<SaplingNoteEntry> z_sapling_inputs_;
+
+    TransactionBuilder builder_;
     CTransaction tx_;
    
     void add_taddr_change_output_to_tx(CAmount amount);
     void add_taddr_outputs_to_tx();
     bool find_unspent_notes();
     bool find_utxos(bool fAcceptCoinbase);
-    boost::array<unsigned char, ZC_MEMO_SIZE> get_memo_from_hex_string(std::string s);
+    std::array<unsigned char, ZC_MEMO_SIZE> get_memo_from_hex_string(std::string s);
     bool main_impl();
 
     // JoinSplit without any input notes to spend
-    Object perform_joinsplit(AsyncJoinSplitInfo &);
+    UniValue perform_joinsplit(AsyncJoinSplitInfo &);
 
     // JoinSplit with input notes to spend (JSOutPoints))
-    Object perform_joinsplit(AsyncJoinSplitInfo &, std::vector<JSOutPoint> & );
+    UniValue perform_joinsplit(AsyncJoinSplitInfo &, std::vector<JSOutPoint> & );
 
     // JoinSplit where you have the witnesses and anchor
-    Object perform_joinsplit(
+    UniValue perform_joinsplit(
         AsyncJoinSplitInfo & info,
-        std::vector<boost::optional < ZCIncrementalWitness>> witnesses,
+        std::vector<boost::optional < SproutWitness>> witnesses,
         uint256 anchor);
 
-    void sign_send_raw_transaction(Object obj);     // throws exception if there was an error
+    void sign_send_raw_transaction(UniValue obj);     // throws exception if there was an error
 
+    // payment disclosure!
+    std::vector<PaymentDisclosureKeyInfo> paymentDisclosureData_;
 };
 
 
@@ -135,7 +167,7 @@ public:
         return delegate->find_utxos(fAcceptCoinbase);
     }
     
-    boost::array<unsigned char, ZC_MEMO_SIZE> get_memo_from_hex_string(std::string s) {
+    std::array<unsigned char, ZC_MEMO_SIZE> get_memo_from_hex_string(std::string s) {
         return delegate->get_memo_from_hex_string(s);
     }
     
@@ -143,23 +175,23 @@ public:
         return delegate->main_impl();
     }
 
-    Object perform_joinsplit(AsyncJoinSplitInfo &info) {
+    UniValue perform_joinsplit(AsyncJoinSplitInfo &info) {
         return delegate->perform_joinsplit(info);
     }
 
-    Object perform_joinsplit(AsyncJoinSplitInfo &info, std::vector<JSOutPoint> &v ) {
+    UniValue perform_joinsplit(AsyncJoinSplitInfo &info, std::vector<JSOutPoint> &v ) {
         return delegate->perform_joinsplit(info, v);
     }
 
-    Object perform_joinsplit(
+    UniValue perform_joinsplit(
         AsyncJoinSplitInfo & info,
-        std::vector<boost::optional < ZCIncrementalWitness>> witnesses,
+        std::vector<boost::optional < SproutWitness>> witnesses,
         uint256 anchor)
     {
         return delegate->perform_joinsplit(info, witnesses, anchor);
     }
 
-    void sign_send_raw_transaction(Object obj) {
+    void sign_send_raw_transaction(UniValue obj) {
         delegate->sign_send_raw_transaction(obj);
     }
     

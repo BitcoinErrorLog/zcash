@@ -1,4 +1,4 @@
-// Copyright (c) 2016 The Zcash developers
+// Copyright (c) 2016-2018 The Zcash developers
 // Original code from: https://gist.github.com/laanwj/0e689cfa37b52bcbbb44
 
 /*
@@ -71,28 +71,39 @@ void ThreadSendAlert()
     //
     CAlert alert;
     alert.nRelayUntil   = GetTime() + 15 * 60;
-    alert.nExpiration   = GetTime() + 365 * 60 * 60;
-    alert.nID           = 1000;  // use https://github.com/zcash/zcash/wiki/specification#assigned-numbers to keep track of alert IDs
-    alert.nCancel       = 0;   // cancels previous messages up to this ID number
+    alert.nExpiration   = GetTime() + 10 * 365 * 24 * 60 * 60;
+    alert.nID           = 1006;  // use https://github.com/zcash/zcash/wiki/specification#assigned-numbers to keep track of alert IDs
+    alert.nCancel       = 1005;  // cancels previous messages up to this ID number
 
     // These versions are protocol versions
     // 170002 : 1.0.0
+    // 170006 : 1.1.2
+    // 170007 : 2.0.0
     alert.nMinVer       = 170002;
-    alert.nMaxVer       = 170002;
+    alert.nMaxVer       = 170006;
 
     //
-    // main.cpp: 
+    // main.cpp:
     //  1000 for Misc warnings like out of disk space and clock is wrong
-    //  2000 for longer invalid proof-of-work chain 
+    //  2000 for longer invalid proof-of-work chain
     //  Higher numbers mean higher priority
     //  4000 or higher will put the RPC into safe mode
-    alert.nPriority     = 5000;
+    alert.nPriority     = 4000;
     alert.strComment    = "";
-    alert.strStatusBar  = "URGENT: Upgrade required: see https://z.cash";
-    alert.strRPCError   = "URGENT: Upgrade required: see https://z.cash";
+    alert.strStatusBar  = "Your client is out of date and incompatible with the Sapling network upgrade. Please update to a recent version of Zcash (2.0.1 or later).";
+    alert.strRPCError   = alert.strStatusBar;
 
     // Set specific client version/versions here. If setSubVer is empty, no filtering on subver is done:
     // alert.setSubVer.insert(std::string("/MagicBean:0.7.2/"));
+    const std::vector<std::string> useragents = {}; //{"MagicBean", "BeanStalk", "AppleSeed", "EleosZcash"};
+
+    BOOST_FOREACH(const std::string& useragent, useragents) {
+    }
+
+    // Sanity check
+    assert(alert.strComment.length() <= 65536); // max length in alert.h
+    assert(alert.strStatusBar.length() <= 256);
+    assert(alert.strRPCError.length() <= 256);
 
     // Sign
     const CChainParams& chainparams = Params();

@@ -12,18 +12,17 @@
 #include <stdint.h>
 
 /**
- * Seed OpenSSL PRNG with additional entropy data
+ * Functions to gather random data via the libsodium CSPRNG
  */
-void RandAddSeed();
-void RandAddSeedPerfmon();
-
-/**
- * Functions to gather random data via the OpenSSL PRNG
- */
-void GetRandBytes(unsigned char* buf, int num);
+void GetRandBytes(unsigned char* buf, size_t num);
 uint64_t GetRand(uint64_t nMax);
 int GetRandInt(int nMax);
 uint256 GetRandHash();
+
+/**
+ * Identity function for MappedShuffle, so that elements retain their original order.
+ */
+ int GenIdentity(int n);
 
 /**
  * Rearranges the elements in the range [first,first+len) randomly, assuming

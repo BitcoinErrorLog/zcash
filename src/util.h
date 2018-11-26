@@ -53,6 +53,8 @@ extern bool fLogIPs;
 extern std::atomic<bool> fReopenDebugLog;
 extern CTranslationInterface translationInterface;
 
+[[noreturn]] extern void new_handler_terminate();
+
 /**
  * Translation function: Call Translate signal on UI interface, which returns a boost::optional result.
  * If no translation slot is registered, nothing is returned, and simply return the input.
@@ -64,6 +66,7 @@ inline std::string _(const char* psz)
 }
 
 void SetupEnvironment();
+bool SetupNetworking();
 
 /** Return true if log accepts specified category */
 bool LogAcceptCategory(const char* category);
@@ -127,13 +130,25 @@ boost::filesystem::path GetConfigFile();
 boost::filesystem::path GetPidFile();
 void CreatePidFile(const boost::filesystem::path &path, pid_t pid);
 #endif
+class missing_zcash_conf : public std::runtime_error {
+public:
+    missing_zcash_conf() : std::runtime_error("Missing zcash.conf") { }
+};
 void ReadConfigFile(std::map<std::string, std::string>& mapSettingsRet, std::map<std::string, std::vector<std::string> >& mapMultiSettingsRet);
 #ifdef WIN32
 boost::filesystem::path GetSpecialFolderPath(int nFolder, bool fCreate = true);
 #endif
 boost::filesystem::path GetTempPath();
+void OpenDebugLog();
 void ShrinkDebugFile();
-void runCommand(std::string strCommand);
+void runCommand(const std::string& strCommand);
+const boost::filesystem::path GetExportDir();
+
+/** Returns privacy notice (for -version, -help and metrics screen) */
+std::string PrivacyInfo();
+
+/** Returns licensing information (for -version) */
+std::string LicenseInfo();
 
 inline bool IsSwitchChar(char c)
 {
@@ -205,6 +220,13 @@ std::string HelpMessageGroup(const std::string& message);
  * @return the formatted string
  */
 std::string HelpMessageOpt(const std::string& option, const std::string& message);
+
+/**
+ * Return the number of physical cores available on the current system.
+ * @note This does not count virtual cores, such as those provided by HyperThreading
+ * when boost is newer than 1.56.
+ */
+int GetNumCores();
 
 void SetThreadPriority(int nPriority);
 void RenameThread(const char* name);
